@@ -1,5 +1,264 @@
 ---
-title: "analysis"
+title: "Food Access and Transportation in North Carolina"
+author: "Frances Lewis"
 format: html
 ---
+
+This analysis examines disparities in food access across North Carolina, with a focus on how income and vehicle availability relate to access to supermarkets. Specifically, the analysis compares the Triangle region (Wake, Durham, and Orange counties) to the Charlotte metropolitan area to determine whether the factors influencing limited food access differ across urban regions.
+
+## Data Setup and Preparation
+
+```{r}
+# load required packages
+library(tidyverse)
+library(sf)
+library(tidycensus)
+```
+
+```{r}
+# load FARA dataset
+fara = read_csv("data/Food Access Research Atlas.csv")
+
+# look at structure of dataset to understand variables
+head(fara)
+```
+
+This step filters the dataset to include only observations from North Carolina, which is the focus of this analysis. I then reviewed the available counties in the dataset to identify the specific counties used in the analysis.
+
+```{r}
+# filter dataset to North Carolina only
+fara_nc = fara |>
+  filter(State == "North Carolina")
+
+head(fara_nc)
+```
+
+```{r}
+# look at unique county names
+unique(fara_nc$County)
+```
+This step filters the dataset to include only the Triangle region (Wake, Durham, Orange) and the Charlotte region (Mecklenburg) for comparison.
+
+```{r}
+# filter dataset to Triangle and Charlotte counties
+fara_regions = fara_nc |>
+  filter(
+    County == "Wake County" |
+    County == "Durham County" |
+    County == "Orange County" |
+    County == "Mecklenburg County"
+  )
+
+# preview filtered regional data
+head(fara_regions)
+```
+
+I created a new variable to group counties into two regions: Triangle and Charlotte, allowing for direct comparison in the analysis.
+
+```{r}
+# create region variable (start by setting everything to Triangle)
+fara_regions = fara_regions |>
+  mutate(region = "Triangle")
+
+# update Mecklenburg County to Charlotte
+fara_regions = fara_regions |>
+  mutate(region = ifelse(County == "Mecklenburg County", "Charlotte", region))
+
+# preview data with region column
+head(fara_regions)
+```
+
+This step summarizes the number of observations in each region to confirm the dataset is correctly structured for comparison.
+
+```{r}
+# summarize number of rows by region
+fara_regions |>
+  group_by(region) |>
+  summarize(count = length(region))
+```
+
+## Descriptive Analysis
+
+In this step, I create variables for low access, income, and vehicle availability and summarize them by region to compare differences between the Triangle and Charlotte.
+
+```{r}
+# create variables for analysis
+analysis_data = fara_regions |>
+  mutate(
+    low_access = LILATracts_1And10,
+    income = as.numeric(MedianFamilyIncome),
+    no_vehicle = HUNVFlag
+  )
+
+# preview new variables
+head(analysis_data[, c("region", "low_access", "income", "no_vehicle")])
+```
+
+```{r}
+# summarize average low access by region
+analysis_data |>
+  group_by(region) |>
+  summarize(avg_low_access = mean(low_access))
+```
+The results show that the Triangle region has a slightly higher share of low-access tracts (approximately 9.5%) compared to the Charlotte region (approximately 8.2%). This suggests that, despite both being urban areas, food access challenges may be somewhat more pronounced in the Triangle.
+
+
+In this step, I compare average income levels between the two regions.
+
+```{r}
+#summarize average income by region
+analysis_data |>
+  group_by(region) |>
+  summarize(avg_income = mean(income, na.rm = TRUE))
+```
+The results show that the Triangle region has a higher average income (approximately $95,455) compared to the Charlotte region (approximately $84,716). This suggests that income levels are higher in the Triangle, which may influence differences in food access across the two regions.
+
+
+In this step, I compare vehicle availability across regions.
+
+```{r}
+# summarize vehicle access by region
+analysis_data |>
+  group_by(region) |>
+  summarize(avg_no_vehicle = mean(no_vehicle))
+```
+The results show that the Triangle region has a slightly higher share of households without a vehicle (approximately 20.7%) compared to the Charlotte region (approximately 19.0%). This suggests that limited vehicle access may be somewhat more common in the Triangle, which could contribute to differences in food access.
+
+```{r}
+# plot low access by region
+analysis_data |>
+  group_by(region) |>
+  summarize(avg_low_access = mean(low_access)) |>
+  ggplot(aes(x = region, y = avg_low_access)) +
+  geom_col() +
+  labs(
+    title = "Low Access by Region",
+    x = "Region",
+    y = "Share of Low Access Tracts"
+  )
+```
+The figure shows that the Triangle region has a slightly higher share of low-access tracts compared to the Charlotte region, consistent with the summary statistics above.
+
+## Regression Analysis
+
+Before estimating the regression model, I first examine the relationship between vehicle access and food access.
+
+```{r}
+analysis_data |>
+  ggplot(aes(x = region, y = income)) +
+  geom_boxplot() +
+  labs(
+    title = "Income Distribution by Region",
+    x = "Region",
+    y = "Income"
+  )
+```
+The boxplot shows the distribution of income across the Triangle and Charlotte regions. The Triangle has a higher median income and a wider spread, indicating greater variability in income levels compared to Charlotte.
+
+A boxplot is used here instead of a scatterplot because income is a continuous variable, and this visualization better captures the distribution of values within each region. In contrast, earlier variables such as low access and vehicle availability were binary, which limited the usefulness of scatterplots.
+
+
+In this step, I examine how income and vehicle availability relate to food access by estimating a simple regression model.
+
+```{r}
+# run regression model
+model = lm(low_access ~ income + no_vehicle, data = analysis_data)
+
+# view regression results
+summary(model)
+```
+The regression results show that both income and vehicle availability are significantly related to food access. Higher income is associated with lower levels of low access, while a higher share of households without a vehicle is associated with higher levels of low access. 
+
+These results suggest that both economic factors and transportation access play important roles in shaping food access. In particular, the positive relationship between lack of vehicle access and low access highlights the importance of transportation in determining whether households can reach supermarkets.
+
+The model explains about 11.8% of the variation in food access, suggesting that other factors beyond income and vehicle access may also influence access to supermarkets.
+
+```{r}
+# create simple table of regression variables
+analysis_data |>
+  group_by(region) |>
+  summarize(
+    avg_low_access = mean(low_access),
+    avg_income = mean(income, na.rm = TRUE),
+    avg_no_vehicle = mean(no_vehicle)
+  )
+```
+
+## Spatial Analysis
+
+In this section, I map low-access tracts in the Triangle and Charlotte regions. This adds a spatial comparison to the descriptive and regression results.
+
+```{r}
+# get 2010 census tract geometries for North Carolina
+tracts = get_decennial(
+  geography = "tract",
+  variables = "P001001",
+  state = "NC",
+  year = 2010,
+  geometry = TRUE
+)
+
+# preview tract geometry data
+head(tracts)
+```
+```{r}
+# create character GEOID variable so FARA can join to tract geometry
+analysis_data = analysis_data |>
+  mutate(tract_geoid = as.character(CensusTract))
+```
+
+```{r}
+# join FARA analysis data to census tract geometry
+tracts_fara = tracts |>
+  left_join(analysis_data, by = c("GEOID" = "tract_geoid"))
+```
+
+```{r}
+# keep only tracts in the study regions
+tracts_regions = tracts_fara |>
+  filter(region == "Triangle" | region == "Charlotte")
+
+# preview joined spatial data
+head(tracts_regions)
+```
+
+```{r}
+# create clearer low access label for mapping
+tracts_regions = tracts_regions |>
+  mutate(low_access_label = ifelse(low_access == 1, "Low Access", "Not Low Access"))
+```
+
+
+First, I map low-access tracts in the Triangle region.
+
+```{r}
+# map low access tracts in the Triangle region
+tracts_regions|>
+  filter(region == "Triangle" & !is.na(low_access)) |>
+  ggplot() +
+  geom_sf(aes(fill = low_access_label)) +
+  labs(
+    title = "Low-Access Tracts in the Triangle Region",
+    fill = "Food Access"
+  )
+```
+
+Next, I map low-access tracts in the Charlotte region.
+
+```{r}
+# map low access tracts in the Charlotte region
+tracts_regions |>
+  filter(region == "Charlotte" & !is.na(low_access)) |>
+  ggplot() +
+  geom_sf(aes(fill = low_access_label)) +
+  labs(
+    title = "Low-Access Tracts in the Charlotte Region",
+    fill = "Food Access"
+  )
+```
+The maps show the spatial distribution of low-access tracts in the Triangle and Charlotte regions. In both regions, low-access tracts are present but are somewhat dispersed rather than concentrated in a single area.
+
+In the Triangle, low-access tracts appear across multiple parts of the region, including both central and peripheral areas. In Charlotte, low-access tracts are also distributed throughout the region, with some clustering near the urban core.
+
+These spatial patterns support the descriptive results, which showed slightly higher levels of low access in the Triangle. The maps provide additional context by illustrating how these differences are distributed geographically rather than occurring in one specific location.
 
